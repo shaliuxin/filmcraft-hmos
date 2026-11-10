@@ -44,8 +44,9 @@ FilmcraftApp (crates/ui-egui) + filmcraft_engine::Session
 | 中文输入法（IME） | ✅ 已验证 | 透明锚点 `requestFocus` → `attach(true, textConfig)` → attach 成功后绑定 `insertText` 等回调 → `showTextInput`；宿主按 `platform_output.ime` 显隐键盘；无 12800003 / 12800009 / 201 |
 | **关闭窗口保存确认** | ✅ 已验证 | 点标题栏 X 弹出「保存项目／关闭前是否保存对"Untitled"的更改？」三按钮（取消／不保存／保存）；「取消」保留窗口与工程；「不保存」正常 `app exit` 退出，无崩溃 |
 | 引擎命令通道 | ✅ 已验证 | 22 条命令覆盖项目／选择／剪贴板／标记／播放头／序列／历史／偏好等子系统，17 条成功、5 条返回预期内的参数校验错误，零崩溃 |
-| 保存按钮的完整 picker → 写盘链路 | ⚠️ 本轮未验证 | 关闭确认里的「保存」按钮本轮未走完整流程；该链路由上游 `host_save` 与 ArkTS picker 提供 |
-| 导出 / 打开真实媒体文件 | ⚠️ 本轮未验证 | 需系统文件选择器交互 |
+| 菜单下拉 / 面板标签交互 | ✅ 已验证 | 9 个顶部菜单全部展开（中文、禁用置灰、快捷键、子菜单箭头正常），9 个面板标签切换生效，全程零崩溃 |
+| 保存按钮 → picker → 写盘 | ❌ 已知缺陷 | 关闭确认里点「保存」后对话框不消失、系统 picker 不弹、worker 阻塞。根因：Rust `hooks()` 发出的 `saveproject` 等 10 个 kind 与 `Index.ets` 接收端（`open`／`file`／`save`／`hostsave`）不匹配，`bridge::request` 永不回包；`host_save`／`download` 回调也未接 |
+| 导出 / 打开真实媒体文件 | ❌ 已知缺陷（同上） | 所有文件对话框类请求均因宿主缝 kind 不匹配被丢弃，需统一 kinds 并补写盘回调后重编 native |
 | x86_64 产物 | ⚠️ 本轮未验证 | 本轮只编译 aarch64（真机所需 ABI） |
 
 ![关闭窗口时的保存确认对话框](./docs/close-confirm.jpeg)
