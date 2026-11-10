@@ -45,11 +45,15 @@ FilmcraftApp (crates/ui-egui) + filmcraft_engine::Session
 | **关闭窗口保存确认** | ✅ 已验证 | 点标题栏 X 弹出「保存项目／关闭前是否保存对"Untitled"的更改？」三按钮（取消／不保存／保存）；「取消」保留窗口与工程；「不保存」正常 `app exit` 退出，无崩溃 |
 | 引擎命令通道 | ✅ 已验证 | 22 条命令覆盖项目／选择／剪贴板／标记／播放头／序列／历史／偏好等子系统，17 条成功、5 条返回预期内的参数校验错误，零崩溃 |
 | 菜单下拉 / 面板标签交互 | ✅ 已验证 | 9 个顶部菜单全部展开（中文、禁用置灰、快捷键、子菜单箭头正常），9 个面板标签切换生效，全程零崩溃 |
-| 保存按钮 → picker → 写盘 | ❌ 已知缺陷 | 关闭确认里点「保存」后对话框不消失、系统 picker 不弹、worker 阻塞。根因：Rust `hooks()` 发出的 `saveproject` 等 10 个 kind 与 `Index.ets` 接收端（`open`／`file`／`save`／`hostsave`）不匹配，`bridge::request` 永不回包；`host_save`／`download` 回调也未接 |
-| 导出 / 打开真实媒体文件 | ❌ 已知缺陷（同上） | 所有文件对话框类请求均因宿主缝 kind 不匹配被丢弃，需统一 kinds 并补写盘回调后重编 native |
+| 保存按钮 → picker → 写盘 | ✅ 已验证 | 脏工程点 X →「保存」→ 系统「选择路径」对话框（文件名自动填 `Untitled.fcproj`）→ 确认后写入 3402 字节工程文件 → 对话框消失 → 正常 `app exit`。日志链路 `saveproject → savebytes → wrote 3402 bytes` |
+| 打开项目 / 导入媒体 | ✅ 已验证 | `openproject`、`openmedia` 均正确唤起系统选择器；点「取消」后 `native.reply` 正常回包，worker 不阻塞，UI 继续响应（菜单可再次展开） |
+| 其它文件类请求 | ✅ 已验证 | `Index.ets` 补齐 `openfile`／`relink`／`saveas`／`pickfolder`／`pickfolderat`／`openurl`／`openpath` 分支，并为未知 kind 加兜底回包；全程日志无 `unsupported` |
+| 导出大视频 | ⚠️ 部分 | 通过 `Services::export_in_memory` 让导出字节走同一 `savebytes` 通道，但大文件（内存编码 + NAPI 字节传输）尚未真机验证 |
 | x86_64 产物 | ⚠️ 本轮未验证 | 本轮只编译 aarch64（真机所需 ABI） |
 
 ![关闭窗口时的保存确认对话框](./docs/close-confirm.jpeg)
+
+![保存时弹出的系统文件选择器](./docs/save-picker.jpeg)
 
 ---
 
@@ -63,6 +67,23 @@ FilmcraftApp (crates/ui-egui) + filmcraft_engine::Session
 4. **宿主 `close_action()`** 只看这两个命令：`CancelClose` → 暂缓关闭（继续绘制对话框）；`Close` → 下一帧重新注入关闭事件再验；无 `CancelClose` → `notify("close")` 通知 ArkTS `terminateSelf()`。
 
 这套机制与姊妹工程 `deckcraft-hmos` 的关窗守卫一致；它依赖上游的 `ViewportCommand`，而不是 `WordApp` 那种 `app.close_requested()` 私有方法。
+
+---
+
+## 文件 IO 宿主缝
+
+上游 FilmCraft 用的是 `HostHooks`（picker 返回**路径字符串**）+ `filmcraft_engine::Services`（`read_file` / `write_file`），
+与 WordCraft / DeckCraft 的 `Services::host_save` 并不是同一套接口，鸿蒙侧这样对接：
+
+- `native/rust/src/lib.rs` 把 `OhosServices` 注入 `Session::new()`：`config.files` 沙箱内的路径（autosave、预设、
+  媒体缓存）交给原生 `FsServices` 静默写入；用户文档路径则发 `bridge::request("savebytes", path, bytes)`，
+  由 ArkTS 弹 `DocumentViewPicker.save` 取得授权 URI 后写盘。上游 `write_project` 正是走 `services.write_file`，
+  所以保存 / 另存 / 导出都自动落到这条通道。
+- `Index.ets` 的 `receive()` 逐一接收 `HostHooks` 发出的 10 个 kinds：`openmedia`（多选，回 JSON 数组路径）、
+  `openproject` / `openfile` / `relink`（单选，复制进 `.inbox` 回真实路径）、`saveproject` / `saveas`（只回建议名，
+  不弹第二次 picker）、`pickfolder` / `pickfolderat`（回沙箱可写目录）、`openurl` / `openpath`。
+- `bridge::request` 是**阻塞等 `native.reply`** 的，因此所有分支（含未知 kind 的兜底）都必须回包；
+  否则 Rust worker 会永久卡在系统选择器上。这一条是该移植最容易踩的坑。
 
 ---
 

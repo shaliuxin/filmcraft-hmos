@@ -88,6 +88,12 @@ function percentEncodePath(uri: string): string {
 
 class NativeMessage { kind: string = ''; text: string = ''; }
 
+/** `pick_save_as` 的 text 是 JSON：{ filter, exts, name }；其余保存 kinds 直接就是文件名。 */
+interface SaveAsRequest {
+  name?: string;
+  filter?: string;
+}
+
 @Entry
 @Component
 struct Index {
@@ -213,16 +219,39 @@ struct Index {
     } else if (request.kind === 'url') {
       this.context.startAbility({ action: 'ohos.want.action.viewData', uri: request.text })
         .catch((error: BusinessError) => { console.error(`External link: ${error.message}`); });
-    } else if (request.kind === 'open' || request.kind === 'file') {
+    } else if (request.kind === 'open' || request.kind === 'file' ||
+               request.kind === 'openproject' || request.kind === 'openfile' || request.kind === 'relink') {
+      // 单选：picker 授权文件复制进沙箱 .inbox，回传真实路径供 Rust std::fs 读取。
       this.pickDocument(id, false);
-    } else if (request.kind === 'save') {
-      this.pickSave(id, request.text);
-    } else if (request.kind === 'hostsave') {
-      // host_save：把字节写到 pickSave 选出的 URI（request.text），data 即文档字节。
-      this.writeSave(id, request.text, data);
+    } else if (request.kind === 'openmedia') {
+      // 多选媒体导入：回传 JSON 数组形式的沙箱路径列表。
+      this.pickMediaFiles(id);
+    } else if (request.kind === 'save' || request.kind === 'saveproject' || request.kind === 'saveas') {
+      // 上游只把这个字符串当「保存路径」用；字节写入经注入的 OhosServices::write_file
+      // → 'savebytes' → 系统保存选择器。此处不弹 picker，避免一次保存弹两次。
+      native.reply(id, true, this.suggestedName(request.text), new ArrayBuffer(0));
+    } else if (request.kind === 'pickfolder' || request.kind === 'pickfolderat') {
+      // 鸿蒙的目录选择器给的是 URI 授权，Rust std::fs 写不了；回沙箱内可写目录更实用。
+      native.reply(id, true, this.ensureExportDir(), new ArrayBuffer(0));
+    } else if (request.kind === 'openurl') {
+      this.context.startAbility({ action: 'ohos.want.action.viewData', uri: request.text })
+        .catch((error: BusinessError) => { console.warn(`FilmCraft open URL: ${error.message}`); });
+      native.reply(id, true, request.text, new ArrayBuffer(0));
+    } else if (request.kind === 'openpath') {
+      // 「在文件管理器中显示」鸿蒙首版不接，但必须回包：bridge::request 是阻塞的。
+      native.reply(id, true, request.text, new ArrayBuffer(0));
+    } else if (request.kind === 'savebytes' || request.kind === 'hostsave' || request.kind === 'download') {
+      // 工程保存 / 导出：弹系统保存选择器，把字节写入用户授权的 URI。
+      this.saveBytes(id, request.text, data);
     } else if (request.kind === 'ime') {
       // Rust 通知：egui 文本字段获得/失去焦点 → 弹起/收起软键盘。
       this.setImeKeyboard(request.text === 'show');
+    } else {
+      // 兜底：任何未识别的请求（id>0）都必须回包，否则 Rust worker 会永久阻塞在 bridge::request。
+      if (id > 0) {
+        console.warn(`FilmCraft unsupported native request: ${request.kind}`);
+        native.reply(id, false, `unsupported: ${request.kind}`, new ArrayBuffer(0));
+      }
     }
   }
 
@@ -513,6 +542,115 @@ struct Index {
     }
     console.error(`FilmCraft save write FAILED: ${lastErr}`);
     native.reply(id, false, lastErr, new ArrayBuffer(0));
+  }
+
+  /** 把保存请求的 text 规整成纯文件名（saveas 传 JSON，其它传裸名，可能带全路径 / 百分号编码）。 */
+  private suggestedName(text: string): string {
+    let name = text && text.length > 0 ? text : 'Untitled.fcproj';
+    try {
+      if (name.trim().startsWith('{')) {
+        const parsed = JSON.parse(name) as SaveAsRequest;
+        if (parsed.name && parsed.name.length > 0) { name = parsed.name; }
+      }
+    } catch (error) {
+      // 不是 JSON：本来就是文件名。
+    }
+    const slash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+    if (slash >= 0) { name = name.substring(slash + 1); }
+    name = percentDecodeName(name);
+    return name.length > 0 ? name : 'Untitled.fcproj';
+  }
+
+  /** 沙箱内可写目录：供 pick_folder / 导出帧 / 代理等内部输出使用。 */
+  private ensureExportDir(): string {
+    const dir = this.context.filesDir + '/exports';
+    try {
+      fileIo.mkdirSync(dir, true);
+    } catch (error) {
+      // 目录已存在。
+    }
+    return dir;
+  }
+
+  /** 多选媒体导入：把 picker 授权的文件全部复制进 .inbox，回 JSON 数组路径。 */
+  private async pickMediaFiles(id: number): Promise<void> {
+    try {
+      const options = new picker.DocumentSelectOptions();
+      options.maxSelectNumber = 20;
+      const uris = await new picker.DocumentViewPicker(this.context).select(options);
+      if (!this.alive || !uris || uris.length === 0) {
+        native.reply(id, false, 'cancelled', new ArrayBuffer(0));
+        return;
+      }
+      const inbox = this.context.filesDir + '/.inbox';
+      try {
+        fileIo.mkdirSync(inbox, true);
+      } catch (error) {
+        // 目录已存在。
+      }
+      const paths: string[] = [];
+      for (let i = 0; i < uris.length; i++) {
+        const info = new fileUri.FileUri(uris[i]);
+        const baseName = percentDecodeName(info.name ||
+          uris[i].substring(uris[i].lastIndexOf('/') + 1) || 'media');
+        const dst = inbox + '/' + Date.now() + '_' + i + '_' + baseName;
+        try {
+          fileIo.copyFileSync(uris[i], dst);
+        } catch (error) {
+          fileIo.copyFileSync(info.path, dst);
+        }
+        paths.push(dst);
+      }
+      console.info(`FilmCraft media: copied ${paths.length} files into .inbox`);
+      native.reply(id, true, JSON.stringify(paths), new ArrayBuffer(0));
+    } catch (error) {
+      console.error(`FilmCraft media pick FAILED: ${(error as Error).message}`);
+      native.reply(id, false, String((error as Error).message ?? error), new ArrayBuffer(0));
+    }
+  }
+
+  /** 工程保存 / 导出：弹系统保存选择器，把字节写进用户授权的 URI。
+   *  Rust worker 阻塞等 native.reply，故成功、取消、异常三条路径都必须回包。 */
+  private async saveBytes(id: number, suggested: string, bytes: ArrayBuffer): Promise<void> {
+    try {
+      const name = this.suggestedName(suggested);
+      const options = new picker.DocumentSaveOptions();
+      options.newFileNames = [name];
+      const uris = await new picker.DocumentViewPicker(this.context).save(options);
+      if (!this.alive || !uris || uris.length === 0) {
+        console.info('FilmCraft save: picker cancelled');
+        native.reply(id, false, 'cancelled', new ArrayBuffer(0));
+        return;
+      }
+      const uri = uris[0];
+      const targets: string[] = [uri];
+      const enc = percentEncodePath(uri);
+      if (enc !== uri) { targets.push(enc); }
+      let lastErr = '';
+      for (const target of targets) {
+        try {
+          const file = fileIo.openSync(target,
+            fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
+          try {
+            fileIo.writeSync(file.fd, bytes);
+          } finally {
+            fileIo.closeSync(file);
+          }
+          console.info(`FilmCraft save: wrote ${bytes?.byteLength ?? 0} bytes -> ${target}`);
+          native.reply(id, true, target, new ArrayBuffer(0));
+          return;
+        } catch (error) {
+          lastErr = String((error as Error).message ?? error);
+          console.warn(`FilmCraft save write: openSync failed for ${target}: ${lastErr}`);
+        }
+      }
+      console.error(`FilmCraft save write FAILED: ${lastErr}`);
+      native.reply(id, false, lastErr, new ArrayBuffer(0));
+    } catch (error) {
+      const message = String((error as Error).message ?? error);
+      console.error(`FilmCraft save FAILED: ${message}`);
+      native.reply(id, false, message, new ArrayBuffer(0));
+    }
   }
 
   private hideStartup(): void {

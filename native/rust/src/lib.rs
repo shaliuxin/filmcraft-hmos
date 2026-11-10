@@ -368,7 +368,12 @@ fn worker(config: Config, rx: mpsc::Receiver<Message>) {
     );
 
     // FilmCraft 的 Session 自带 `default()`（首开空工程）；文件打开走 `session.execute("file.open",…)`。
-    let session = filmcraft_engine::Session::default();
+    // 鸿蒙沙箱外的路径 std::fs 写不了（DocumentViewPicker 只授予 URI 级权限）。
+    // 注入 OHOS Services：工程保存 / 导出的字节交给 ArkTS 弹系统保存选择器落盘；
+    // 沙箱内部文件（autosave / 预设 / 媒体缓存）仍走原生 std::fs，不打扰用户。
+    let session = filmcraft_engine::Session::new(std::sync::Arc::new(OhosServices {
+        files: config.files.clone(),
+    }));
     let mut app = FilmcraftApp::new(session);
     app.integrated_titlebar = false; // 鸿蒙走 ArkTS 原生标题栏，不用上游自绘标题栏
     app.hooks = hooks(&config.files, &config.system_locale);
@@ -667,6 +672,74 @@ fn close_action(validating: bool, commands: &[egui::ViewportCommand]) -> CloseAc
     }
 }
 
+/// 鸿蒙文件服务（注入 `filmcraft_engine::Session`）。
+///
+/// 上游 `write_project` / 导出都经 `Services::write_file(path, bytes)`。鸿蒙的
+/// `DocumentViewPicker` 只给 URI 级临时授权，Rust 的 `std::fs` 写不了沙箱外的用户文档，
+/// 因此这里按路径分流：
+/// - `config.files` 沙箱目录内（autosave、预设、媒体缓存）→ 原生 `FsServices`，静默写入；
+/// - 用户文档路径 → `bridge::request("savebytes", …)`，由 ArkTS 弹系统保存选择器写盘。
+///
+/// `bridge::request` 会阻塞 worker 等 `native.reply`；ArkTS 侧对成功／取消／异常三条路径
+/// 都必须回包，否则帧循环会永久卡住。
+#[cfg(target_env = "ohos")]
+struct OhosServices {
+    files: String,
+}
+
+#[cfg(target_env = "ohos")]
+impl OhosServices {
+    fn internal(&self, path: &str) -> bool {
+        !self.files.is_empty() && path.starts_with(&self.files)
+    }
+}
+
+#[cfg(target_env = "ohos")]
+impl filmcraft_engine::Services for OhosServices {
+    fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+        std::fs::read(path)
+    }
+
+    fn write_file(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        if self.internal(path) {
+            return filmcraft_engine::Services::write_file(&filmcraft_engine::FsServices, path, data);
+        }
+        bridge::request("savebytes", path, data)
+            .map(|_| ())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    }
+
+    fn write_file_new(&self, path: &str, data: &[u8]) -> std::io::Result<()> {
+        if self.internal(path) {
+            return filmcraft_engine::Services::write_file_new(&filmcraft_engine::FsServices, path, data);
+        }
+        self.write_file(path, data)
+    }
+
+    fn file_size(&self, path: &str) -> std::io::Result<u64> {
+        let m = std::fs::metadata(path)?;
+        if m.is_file() {
+            Ok(m.len())
+        } else {
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{path} is not a file")))
+        }
+    }
+
+    fn list_dir(&self, dir: &str) -> Option<std::io::Result<Vec<String>>> {
+        let dir = if dir.is_empty() { "." } else { dir };
+        Some(std::fs::read_dir(dir).map(|rd| {
+            rd.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        }))
+    }
+
+    /// 导出先在内存编码再交给 `write_file`，才能走系统保存选择器（沙箱外无直接写权限）。
+    fn export_in_memory(&self) -> bool {
+        true
+    }
+}
+
 /// 宿主 hook（OHOS）：文件/目录选择器走 ArkTS 系统选择器，命令/链接走宿主能力。
 /// 单值选择器回传沙箱路径（reply 的 name 字段）；多选媒体回传 JSON 数组。
 #[cfg(target_env = "ohos")]
@@ -685,7 +758,9 @@ fn hooks(files: &str, system_locale: &str) -> HostHooks {
         let files = files.to_string();
         move || pick_one("openproject", "FilmCraft Project", &files)
     }));
-    // 保存工程（回传 picker URI，真正写盘由上游 host_save/download 路径走 ArkTS）。
+    // 保存/另存：上游只把返回值当路径字符串用，字节写入走上面注入的 OhosServices::write_file
+    // （→ ArkTS "savebytes" 弹系统保存选择器）。这里不弹 picker，避免一次保存弹两次选择器；
+    // ArkTS 直接把建议文件名回包即可。
     h.pick_save = Some(Box::new(move |name: &str| pick_one("saveproject", name, "")));
     // 导出/另存（含 filter）。
     h.pick_save_as = Some(Box::new(move |filter: &str, exts: &[&str], name: &str| {
