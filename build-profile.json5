@@ -1,0 +1,55 @@
+{
+  // ── 占位符版本（公开仓库用）──────────────────────────────────────────────
+  // 真实的签名材料路径 / 口令 hex 属于本机私有信息，不入库：
+  //   本机真实配置另存为 signing/build-profile.local.json5（signing/ 已被 .gitignore 屏蔽）。
+  //   本地打包前请手动还原：cp signing/build-profile.local.json5 build-profile.json5
+  //
+  // 首次使用请在 DevEco Studio 里生成自己的签名配置：
+  //   File → Project Structure → Signing Configs → 勾选自动签名，
+  //   用 bundleName io.github.shaliuxin.filmcraft.hmos 生成绑定本机设备 UDID 的调试 Profile，
+  //   DevEco 会自动回写 material 四件套到本文件（回写后请本地备份，勿提交）。
+  //
+  // 包名铁律：bundleName 绑定 profile 与设备 UDID，上架后永久不可改；
+  // 切勿借用其它 craft 工程的 profile（会与该包名旧版撞车，报 9568263 版本降级）。
+  // ────────────────────────────────────────────────────────────────────────
+  "app": {
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "targetSdkVersion": "26.0.0",
+        "compatibleSdkVersion": "26.0.0",
+        "runtimeOS": "HarmonyOS"
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ],
+    "capabilities": [
+      {
+        "bundleName": "io.github.shaliuxin.filmcraft.hmos",
+        "config": []
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

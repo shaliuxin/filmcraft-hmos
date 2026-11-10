@@ -1,0 +1,18 @@
+{
+  "UniformDataTypeDeclarations": [
+    {
+      "TypeId": "io.github.shaliuxin.filmcraft.hmos.project",
+      "BelongingToTypes": [
+        "general.file"
+      ],
+      "FilenameExtensions": [
+        ".fcproj"
+      ],
+      "MIMETypes": [
+        "application/x-filmcraft-project"
+      ],
+      "Description": "FilmCraft project",
+      "ReferenceURL": ""
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+[package]
+name = "eframe"
+version = "0.37.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "OHOS-only eframe shim. Exposes exactly the eframe API surface filmcraft-ui-egui uses (eframe::wgpu / eframe::egui_wgpu / eframe::Frame / eframe::App) WITHOUT pulling in winit, which has no OpenHarmony backend and compile_errors."
+
+[lib]
+path = "src/lib.rs"
+
+# `filmcraft-ui-egui` declares `eframe = { features = ["default_fonts","wgpu","accesskit","clipboard"] }`.
+# Cargo errors if a consumer requests a feature the patched crate does not declare, so we expose all
+# four as no-ops. (The real eframe gates arboard / accesskit / window-clipboard behind them; the OHOS
+# adapter owns none of that — clipboard goes through egui's own `Context`, windowing goes through the
+# ArkTS/XComponent host.)
+[features]
+default = []
+default_fonts = []
+wgpu = []
+accesskit = []
+clipboard = []
+
+# 说明：egui / egui-wgpu 走 storytold fork（与 filmcraft 根 [patch] 同一 rev），
+# wgpu 用 30.x（GL 后端由适配层在运行期经 wgpu::Backends::GL 选择，与 WordCraft 一致）。
+[dependencies]
+egui = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a", default-features = false, features = ["default_fonts"] }
+egui-wgpu = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a", default-features = false, features = ["capture"] }
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "gles"] }
+
+[workspace]

@@ -1,0 +1,7 @@
+{
+  "modelVersion": "26.0.0",
+  "description": "FilmCraft native egui video editor for HarmonyOS tablet and PC",
+  "license": "MIT OR Apache-2.0",
+  "dependencies": {},
+  "devDependencies": {}
+}
