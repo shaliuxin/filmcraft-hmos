@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "io.github.shaliuxin.filmcraft.hmos",
     "vendor": "filmcraft-hmos",
-    "versionCode": 1700,
-    "versionName": "0.17.0",
+    "versionCode": 2001,
+    "versionName": "0.20.1",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }
